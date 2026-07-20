@@ -32,52 +32,49 @@ function isWhitelistedDomain(domain, whitelist) {
     });
 }
 
-async function clearSiteDataForDomain(domain) {
-    const result = await chrome.storage.local.get([STORAGE_KEY]);
-    const whitelist = result[STORAGE_KEY] || [];
+function clearSiteDataForDomain(domain) {
+    chrome.storage.local.get([STORAGE_KEY], (result) => {
+        const whitelist = result[STORAGE_KEY] || [];
 
-    if (isWhitelistedDomain(domain, whitelist)) return;
+        if (isWhitelistedDomain(domain, whitelist)) return;
 
-    // To completely eliminate leftover registry entries for deep subdomains like docs.tomorrow.io,
-    // we explicitly target the exact host, the wildcard variant, and the root domain.
-    const rootDomain = domain.split('.').slice(-2).join('.');
-    const origins = [
-        `https://${domain}/`, 
-        `http://${domain}/`,
-        `https://*.${domain}/`,
-        `http://*.${domain}/`
-    ];
-    
-    if (domain !== rootDomain) {
-        origins.push(
-            `https://${rootDomain}/`, 
-            `http://${rootDomain}/`,
-            `https://*.${rootDomain}/`,
-            `http://*.${rootDomain}/`
-        );
-    }
+        const parts = domain.split('.');
+        const origins = [];
+        
+        for (let i = 0; i <= parts.length - 2; i++) {
+            const sub = parts.slice(i).join('.');
+            origins.push(`https://${sub}/`, `http://${sub}/`);
+        }
+        origins.push(`https://${domain}/`, `http://${domain}/`);
 
-    const removalOptions = {
-        origins: [...new Set(origins)],
-        originTypes: { unprotectedWeb: true, protectedWeb: true, extension: true }
-    };
+        const uniqueOrigins = [...new Set(origins)];
 
-    const dataToRemove = {
-        cookies: true,
-        appcache: true,
-        cache: true,
-        cacheStorage: true,
-        fileSystems: true,
-        indexedDB: true,
-        localStorage: true,
-        serviceWorkers: true,
-        webSQL: true,
-        pluginData: true
-    };
+        const removalOptions = {
+            origins: uniqueOrigins,
+            originTypes: { unprotectedWeb: true, protectedWeb: true }
+        };
 
-    chrome.browsingData.remove(removalOptions, dataToRemove, () => {
-        if (chrome.runtime.lastError) {
-            console.error("Cleanup failed: ", chrome.runtime.lastError);
+        const dataToRemove = {
+            cookies: true,
+            appcache: true,
+            cache: true,
+            cacheStorage: true,
+            fileSystems: true,
+            indexedDB: true,
+            localStorage: true,
+            serviceWorkers: true,
+            webSQL: true,
+            pluginData: true
+        };
+
+        chrome.browsingData.remove(removalOptions, dataToRemove, () => {});
+
+        const rootDomain = parts.slice(-2).join('.');
+        if (rootDomain && rootDomain !== domain) {
+            chrome.browsingData.remove({
+                origins: [`https://${rootDomain}/`, `http://${rootDomain}/`],
+                originTypes: { unprotectedWeb: true, protectedWeb: true }
+            }, dataToRemove, () => {});
         }
     });
 }
