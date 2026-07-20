@@ -20,46 +20,53 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     }
 });
 
+// Helper function to check wildcards like *.live.com
+function isWhitelistedDomain(domain, whitelist) {
+    return whitelist.some(site => {
+        site = site.trim();
+        if (!site) return false;
+
+        // Handle wildcard matching (e.g., *.live.com)
+        if (site.startsWith('*.')) {
+            const baseDomain = site.slice(2);
+            return domain === baseDomain || domain.endsWith('.' + baseDomain);
+        }
+        
+        // Exact match or normal subdomain check
+        return domain === site || domain.endsWith('.' + site);
+    });
+}
+
 async function clearSiteDataForDomain(domain) {
     const result = await chrome.storage.local.get([STORAGE_KEY]);
     const whitelist = result[STORAGE_KEY] || [];
 
-    // Check if the domain or its parent is whitelisted
-    const isWhitelisted = whitelist.some(site => 
-        domain === site || domain.endsWith('.' + site)
-    );
+    // Check against the whitelist using wildcard support
+    if (isWhitelistedDomain(domain, whitelist)) {
+        return; // Skip deletion if whitelisted
+    }
     
-    if (!isWhitelisted) {
-        const rootDomain = domain.split('.').slice(-2).join('.');
-        
-        // 1. Clear Cookies
-        const cookiesSpecific = await chrome.cookies.getAll({ domain: domain });
-        const cookiesRoot = (domain !== rootDomain) ? await chrome.cookies.getAll({ domain: rootDomain }) : [];
-        const allCookies = [...cookiesSpecific, ...cookiesRoot];
-        
-        const uniqueCookies = [...new Set(allCookies.map(c => JSON.stringify(c)))].map(c => JSON.parse(c));
-
-        uniqueCookies.forEach((cookie) => {
-            if (cookie.domain === domain || cookie.domain.endsWith('.' + domain) || cookie.domain.endsWith('.' + rootDomain)) {
-                const protocol = cookie.secure ? "https://" : "http://";
-                chrome.cookies.remove({ 
-                    url: protocol + cookie.domain + cookie.path, 
-                    name: cookie.name 
-                });
-            }
-        });
-
-        // 2. Clear Local Storage, IndexedDB, Cache, and other Site Data using browsingData API
-        const origins = [`https://${domain}`, `http://${domain}`];
-        if (domain !== rootDomain) {
-            origins.push(`https://${rootDomain}`, `http://${rootDomain}`);
+    // 1. Clear Cookies flexibly for the domain and its variants
+    const cookies = await chrome.cookies.getAll({});
+    
+    cookies.forEach((cookie) => {
+        const cookieDomainClean = cookie.domain.replace(/^\./, '');
+        if (domain === cookieDomainClean || domain.endsWith('.' + cookieDomainClean) || cookieDomainClean.endsWith('.' + domain)) {
+            const protocol = cookie.secure ? "https://" : "http://";
+            chrome.cookies.remove({ 
+                url: protocol + cookie.domain + cookie.path, 
+                name: cookie.name 
+            });
         }
+    });
 
-        const removalOptions = {
-            origins: origins
-        };
-
-        const dataToRemove = {
+    // 2. Clear Site Data using a broader origin scope to catch all storage
+    chrome.browsingData.remove(
+        { 
+            origins: [`https://${domain}/`, `http://${domain}/`],
+            hostnames: [domain] 
+        },
+        {
             appcache: true,
             cache: true,
             cacheStorage: true,
@@ -67,16 +74,18 @@ async function clearSiteDataForDomain(domain) {
             indexedDB: true,
             localStorage: true,
             serviceWorkers: true,
-            webSQL: true
-        };
-
-        chrome.browsingData.remove(removalOptions, dataToRemove, () => {
-            // Site data completely cleared for these origins
-        });
-    }
+            webSQL: true,
+            pluginData: true
+        },
+        () => {
+            if (chrome.runtime.lastError) {
+                console.error(chrome.runtime.lastError);
+            }
+        }
+    );
 }
 
-// Keep your existing message listener for the whitelist
+// Message listener for the whitelist
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "addMultipleToWhitelist") {
         chrome.storage.local.get([STORAGE_KEY], (res) => {
