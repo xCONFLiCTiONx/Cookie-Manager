@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { background-color: #121212; color: #ffffff; padding: 20px; font-family: sans-serif; max-width: 600px; margin: auto; }
+        h3 { color: #00e676; }
+        textarea { width: 100%; height: 300px; background-color: #1e1e1e; color: #00e676; border: 1px solid #333; padding: 10px; font-family: monospace; border-radius: 4px; }
+        button { background-color: #00e676; border: none; padding: 12px 20px; cursor: pointer; color: #000; font-weight: bold; margin-top: 10px; border-radius: 4px; margin-right: 5px; }
+    </style>
+</head>
+<body>
+    <h3>Whitelisted Domains</h3>
+    <textarea id="whitelist"></textarea>
+    <br>
+    <button id="save">Save List</button>
+    <button id="exportBtn">Export List</button>
+    <button id="importBtn">Import List</button>
+    <input type="file" id="fileInput" style="display: none;" accept=".txt">
+    <script src="options.js"></script>
+</body>
+</html>
