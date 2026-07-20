@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Cookie Manager",
   "version": "1.0",
-  "permissions": ["cookies", "storage", "tabs"],
+  "permissions": ["cookies", "storage", "tabs", "browsingData"],
   "host_permissions": ["<all_urls>"],
   "options_page": "options.html",
   "action": { 
