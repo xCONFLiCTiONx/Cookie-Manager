@@ -38,10 +38,28 @@ async function clearSiteDataForDomain(domain) {
 
     if (isWhitelistedDomain(domain, whitelist)) return;
 
-    // Chrome's browsingData.remove expects 'origins' instead of 'hostnames'
+    // To completely eliminate leftover registry entries for deep subdomains like docs.tomorrow.io,
+    // we explicitly target the exact host, the wildcard variant, and the root domain.
+    const rootDomain = domain.split('.').slice(-2).join('.');
+    const origins = [
+        `https://${domain}/`, 
+        `http://${domain}/`,
+        `https://*.${domain}/`,
+        `http://*.${domain}/`
+    ];
+    
+    if (domain !== rootDomain) {
+        origins.push(
+            `https://${rootDomain}/`, 
+            `http://${rootDomain}/`,
+            `https://*.${rootDomain}/`,
+            `http://*.${rootDomain}/`
+        );
+    }
+
     const removalOptions = {
-        origins: [`https://${domain}/`, `http://${domain}/`],
-        originTypes: { unprotectedWeb: true }
+        origins: [...new Set(origins)],
+        originTypes: { unprotectedWeb: true, protectedWeb: true, extension: true }
     };
 
     const dataToRemove = {
