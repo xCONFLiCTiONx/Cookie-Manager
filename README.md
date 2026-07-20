@@ -1,5 +1,9 @@
 # Cookie-Manager
 
+Chrome Extension
+
+
+
 Whitelist and delete cookies on tab close.
 
 
