@@ -429,5 +429,4 @@ FodyWeavers.xsd
 *.msp
 
 # Custom
-whitelist.txt
 *.bat

@@ -1,28 +1,39 @@
 const STORAGE_KEY = 'HiddenElements';
-const tabUrls = {};
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.url) {
-        try {
-            const url = new URL(changeInfo.url);
-            tabUrls[tabId] = url.hostname;
-        } catch (e) {
-            delete tabUrls[tabId];
+function normalizeAndFormatDomain(inputDomain) {
+    let domain = inputDomain.trim().toLowerCase();
+    if (!domain) return null;
+    domain = domain.replace(/^https?:\/\//, '');
+    domain = domain.replace(/^\*\./, '');
+    domain = domain.split('/')[0].split('?')[0].split('#')[0].split(':')[0];
+    domain = domain.replace(/^www\./, '');
+    return '*.' + domain;
+}
+
+function cleanAndOptimizeList(list) {
+    const normalized = list.map(normalizeAndFormatDomain).filter(Boolean);
+    const unique = [...new Set(normalized)];
+    
+    unique.sort((a, b) => a.length - b.length);
+
+    const optimized = [];
+    for (const item of unique) {
+        const base = item.slice(2);
+        const isRedundant = optimized.some(existing => {
+            const existingBase = existing.slice(2);
+            return base === existingBase || base.endsWith('.' + existingBase);
+        });
+        if (!isRedundant) {
+            optimized.push(item);
         }
     }
-});
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-    if (tabUrls[tabId]) {
-        const domain = tabUrls[tabId];
-        setTimeout(() => clearSiteDataForDomain(domain), 500);
-        delete tabUrls[tabId];
-    }
-});
+    return optimized.sort();
+}
 
 function isWhitelistedDomain(domain, whitelist) {
+    domain = domain.replace(/^\./, '').toLowerCase();
     return whitelist.some(site => {
-        site = site.trim();
+        site = site.trim().replace(/^\./, '').toLowerCase();
         if (!site) return false;
         if (site.startsWith('*.')) {
             const baseDomain = site.slice(2);
@@ -32,61 +43,73 @@ function isWhitelistedDomain(domain, whitelist) {
     });
 }
 
-function clearSiteDataForDomain(domain) {
+function cleanAllUnwhitelistedData() {
     chrome.storage.local.get([STORAGE_KEY], (result) => {
         const whitelist = result[STORAGE_KEY] || [];
 
-        if (isWhitelistedDomain(domain, whitelist)) return;
+        chrome.cookies.getAll({}, (cookies) => {
+            if (!cookies) return;
 
-        const parts = domain.split('.');
-        const origins = [];
-        
-        for (let i = 0; i <= parts.length - 2; i++) {
-            const sub = parts.slice(i).join('.');
-            origins.push(`https://${sub}/`, `http://${sub}/`);
-        }
-        origins.push(`https://${domain}/`, `http://${domain}/`);
+            cookies.forEach(cookie => {
+                const rawDomain = cookie.domain;
+                const cookieDomain = rawDomain.replace(/^\./, '').toLowerCase();
+                
+                if (!isWhitelistedDomain(cookieDomain, whitelist)) {
+                    const protocol = cookie.secure ? "https://" : "http://";
+                    const cleanDomain = rawDomain.startsWith('.') ? rawDomain.slice(1) : rawDomain;
+                    const url = `${protocol}${cleanDomain}${cookie.path}`;
+                    
+                    chrome.cookies.remove({
+                        url: url,
+                        name: cookie.name,
+                        storeId: cookie.storeId
+                    });
 
-        const uniqueOrigins = [...new Set(origins)];
+                    const removalOptions = {
+                        origins: [`https://${cleanDomain}/`, `http://${cleanDomain}/`],
+                        originTypes: { unprotectedWeb: true, protectedWeb: true }
+                    };
 
-        const removalOptions = {
-            origins: uniqueOrigins,
-            originTypes: { unprotectedWeb: true, protectedWeb: true }
-        };
+                    const dataToRemove = {
+                        cache: true,
+                        cacheStorage: true,
+                        fileSystems: true,
+                        indexedDB: true,
+                        localStorage: true,
+                        serviceWorkers: true,
+                        webSQL: true
+                    };
 
-        const dataToRemove = {
-            cookies: true,
-            appcache: true,
-            cache: true,
-            cacheStorage: true,
-            fileSystems: true,
-            indexedDB: true,
-            localStorage: true,
-            serviceWorkers: true,
-            webSQL: true,
-            pluginData: true
-        };
-
-        chrome.browsingData.remove(removalOptions, dataToRemove, () => {});
-
-        const rootDomain = parts.slice(-2).join('.');
-        if (rootDomain && rootDomain !== domain) {
-            chrome.browsingData.remove({
-                origins: [`https://${rootDomain}/`, `http://${rootDomain}/`],
-                originTypes: { unprotectedWeb: true, protectedWeb: true }
-            }, dataToRemove, () => {});
-        }
+                    chrome.browsingData.remove(removalOptions, dataToRemove);
+                }
+            });
+        });
     });
 }
+
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+    cleanAllUnwhitelistedData();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+    cleanAllUnwhitelistedData();
+});
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "addMultipleToWhitelist") {
         chrome.storage.local.get([STORAGE_KEY], (res) => {
             let list = res[STORAGE_KEY] || [];
             request.domains.forEach(d => {
-                if (!list.includes(d)) list.push(d);
+                const formatted = normalizeAndFormatDomain(d);
+                if (formatted && !list.includes(formatted)) {
+                    list.push(formatted);
+                }
             });
-            chrome.storage.local.set({ [STORAGE_KEY]: list });
+            const optimizedList = cleanAndOptimizeList(list);
+            chrome.storage.local.set({ [STORAGE_KEY]: optimizedList }, () => {
+                cleanAllUnwhitelistedData();
+            });
         });
     }
+    return true;
 });
