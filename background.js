@@ -1,4 +1,7 @@
 const STORAGE_KEY = 'HiddenElements';
+let cleanupTimer = null;
+let pendingCleanup = null;
+const tabOrigins = new Map();
 
 function normalizeAndFormatDomain(inputDomain) {
     let domain = inputDomain.trim().toLowerCase();
@@ -13,7 +16,7 @@ function normalizeAndFormatDomain(inputDomain) {
 function cleanAndOptimizeList(list) {
     const normalized = list.map(normalizeAndFormatDomain).filter(Boolean);
     const unique = [...new Set(normalized)];
-    
+
     unique.sort((a, b) => a.length - b.length);
 
     const optimized = [];
@@ -43,60 +46,172 @@ function isWhitelistedDomain(domain, whitelist) {
     });
 }
 
-function cleanAllUnwhitelistedData() {
+function getOriginFromUrl(url) {
+    try {
+        const parsed = new URL(url);
+        return `${parsed.protocol}//${parsed.host}`;
+    } catch (e) {
+        return null;
+    }
+}
+
+function normalizeHost(hostname) {
+    return hostname.replace(/^\./, '').toLowerCase();
+}
+
+function originMatchesCookie(origin, cookieDomain) {
+    if (!origin || !cookieDomain) return false;
+    try {
+        const originHost = new URL(origin).hostname;
+        const cookieHost = normalizeHost(cookieDomain);
+        return originHost === cookieHost || originHost.endsWith('.' + cookieHost) || cookieHost.endsWith('.' + originHost);
+    } catch (e) {
+        return false;
+    }
+}
+
+function rememberTab(tab) {
+    if (!tab || !tab.id || !tab.url) {
+        return;
+    }
+
+    const origin = getOriginFromUrl(tab.url);
+    if (!origin) {
+        tabOrigins.delete(tab.id);
+        return;
+    }
+
+    tabOrigins.set(tab.id, origin);
+}
+
+function scheduleCleanup(removedTabId, removedOrigin, removedWindowId) {
+    pendingCleanup = { removedTabId, removedOrigin, removedWindowId };
+
+    if (cleanupTimer) {
+        clearTimeout(cleanupTimer);
+    }
+
+    cleanupTimer = setTimeout(() => {
+        cleanupTimer = null;
+        const cleanupContext = pendingCleanup;
+        pendingCleanup = null;
+        cleanAllUnwhitelistedData(cleanupContext);
+    }, 250);
+}
+
+function getOpenOrigins(callback) {
+    chrome.tabs.query({}, (tabs) => {
+        const origins = new Set();
+        tabs.forEach((tab) => {
+            if (!tab.url) return;
+            const origin = getOriginFromUrl(tab.url);
+            if (origin) {
+                origins.add(origin);
+            }
+        });
+        callback(origins);
+    });
+}
+
+function cleanAllUnwhitelistedData(cleanupContext) {
     chrome.storage.local.get([STORAGE_KEY], (result) => {
         const whitelist = result[STORAGE_KEY] || [];
 
-        chrome.cookies.getAll({}, (cookies) => {
-            if (!cookies) return;
+        getOpenOrigins((openOrigins) => {
+            chrome.cookies.getAll({}, (cookies) => {
+                if (!cookies || !cookies.length) return;
 
-            cookies.forEach(cookie => {
-                const rawDomain = cookie.domain;
-                const cookieDomain = rawDomain.replace(/^\./, '').toLowerCase();
-                
-                if (!isWhitelistedDomain(cookieDomain, whitelist)) {
-                    const protocol = cookie.secure ? "https://" : "http://";
+                const originsToRemove = new Set();
+                const cookieRemovalPromises = cookies.map((cookie) => {
+                    const rawDomain = cookie.domain || '';
+                    const cookieDomain = rawDomain.replace(/^\./, '').toLowerCase();
+
+                    if (isWhitelistedDomain(cookieDomain, whitelist)) {
+                        return Promise.resolve();
+                    }
+
                     const cleanDomain = rawDomain.startsWith('.') ? rawDomain.slice(1) : rawDomain;
-                    const url = `${protocol}${cleanDomain}${cookie.path}`;
-                    
-                    chrome.cookies.remove({
-                        url: url,
-                        name: cookie.name,
-                        storeId: cookie.storeId
+                    const protocol = cookie.secure ? 'https://' : 'http://';
+                    const cookieOrigin = `${protocol}${cleanDomain}`;
+
+                    const isProtected = openOrigins.has(cookieOrigin) || (
+                        cleanupContext && cleanupContext.removedOrigin && cleanupContext.removedOrigin === cookieOrigin && openOrigins.has(cleanupContext.removedOrigin)
+                    );
+
+                    if (isProtected) {
+                        return Promise.resolve();
+                    }
+
+                    const shouldRemove = !cleanupContext || !cleanupContext.removedOrigin || !originMatchesCookie(cleanupContext.removedOrigin, cookieDomain) || cleanupContext.removedOrigin !== cookieOrigin;
+                    if (!shouldRemove) {
+                        return Promise.resolve();
+                    }
+
+                    originsToRemove.add(cookieOrigin);
+
+                    return new Promise((resolve) => {
+                        chrome.cookies.remove({
+                            url: `${cookieOrigin}${cookie.path}`,
+                            name: cookie.name,
+                            storeId: cookie.storeId
+                        }, () => resolve());
                     });
+                });
 
-                    const removalOptions = {
-                        origins: [`https://${cleanDomain}/`, `http://${cleanDomain}/`],
+                Promise.all(cookieRemovalPromises).then(() => {
+                    if (!originsToRemove.size) return;
+
+                    chrome.browsingData.remove({
+                        origins: [...originsToRemove],
                         originTypes: { unprotectedWeb: true, protectedWeb: true }
-                    };
-
-                    const dataToRemove = {
+                    }, {
                         cache: true,
                         cacheStorage: true,
+                        cookies: true,
                         fileSystems: true,
                         indexedDB: true,
                         localStorage: true,
                         serviceWorkers: true,
                         webSQL: true
-                    };
-
-                    chrome.browsingData.remove(removalOptions, dataToRemove);
-                }
+                    });
+                });
             });
         });
     });
 }
 
-chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
-    cleanAllUnwhitelistedData();
+chrome.tabs.onCreated.addListener(rememberTab);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.url || changeInfo.status) {
+        rememberTab(tab);
+    }
+});
+chrome.tabs.onAttached.addListener((tabId) => {
+    chrome.tabs.get(tabId, rememberTab);
+});
+chrome.tabs.onDetached.addListener((tabId) => {
+    chrome.tabs.get(tabId, rememberTab);
+});
+chrome.tabs.onReplaced.addListener((addedTabId) => {
+    chrome.tabs.get(addedTabId, rememberTab);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+    const removedOrigin = tabOrigins.get(tabId) || null;
+    tabOrigins.delete(tabId);
+    scheduleCleanup(tabId, removedOrigin, null);
+});
+
+chrome.windows.onRemoved.addListener((windowId) => {
+    scheduleCleanup(null, null, windowId);
 });
 
 chrome.runtime.onStartup.addListener(() => {
-    cleanAllUnwhitelistedData();
+    scheduleCleanup();
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "addMultipleToWhitelist") {
+    if (request.action === 'addMultipleToWhitelist') {
         chrome.storage.local.get([STORAGE_KEY], (res) => {
             let list = res[STORAGE_KEY] || [];
             request.domains.forEach(d => {
@@ -107,7 +222,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             });
             const optimizedList = cleanAndOptimizeList(list);
             chrome.storage.local.set({ [STORAGE_KEY]: optimizedList }, () => {
-                cleanAllUnwhitelistedData();
+                scheduleCleanup();
             });
         });
     }
