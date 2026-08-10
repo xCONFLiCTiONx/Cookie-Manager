@@ -130,22 +130,22 @@ function cleanAllUnwhitelistedData(cleanupContext) {
                         return Promise.resolve();
                     }
 
-                    const cleanDomain = rawDomain.startsWith('.') ? rawDomain.slice(1) : rawDomain;
-                    const protocol = cookie.secure ? 'https://' : 'http://';
-                    const cookieOrigin = `${protocol}${cleanDomain}`;
-
-                    const isProtected = openOrigins.has(cookieOrigin) || (
-                        cleanupContext && cleanupContext.removedOrigin && cleanupContext.removedOrigin === cookieOrigin && openOrigins.has(cleanupContext.removedOrigin)
-                    );
+                    // Check if any open tab matches this cookie's domain
+                    let isProtected = false;
+                    for (const origin of openOrigins) {
+                        if (originMatchesCookie(origin, cookieDomain)) {
+                            isProtected = true;
+                            break;
+                        }
+                    }
 
                     if (isProtected) {
                         return Promise.resolve();
                     }
 
-                    const shouldRemove = !cleanupContext || !cleanupContext.removedOrigin || !originMatchesCookie(cleanupContext.removedOrigin, cookieDomain) || cleanupContext.removedOrigin !== cookieOrigin;
-                    if (!shouldRemove) {
-                        return Promise.resolve();
-                    }
+                    const cleanDomain = rawDomain.startsWith('.') ? rawDomain.slice(1) : rawDomain;
+                    const protocol = cookie.secure ? 'https://' : 'http://';
+                    const cookieOrigin = `${protocol}${cleanDomain}`;
 
                     originsToRemove.add(cookieOrigin);
 
