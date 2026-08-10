@@ -13,7 +13,7 @@ function isWhitelisted(domain, whitelist) {
     });
 }
 
-// Check current tab status on popup open
+// Initial state check
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tab = tabs[0];
     if (!tab || !tab.url) return;
@@ -30,13 +30,15 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 btn.innerText = "Whitelisted";
                 btn.style.color = "#888";
                 btn.style.backgroundColor = "#1e1e1e";
+                btn.disabled = true;
             }
         });
     } catch (e) {
-        // Invalid URL or restricted internal page
+        // Restricted page
     }
 });
 
+// Exclude (Whitelist) current tab
 document.getElementById('excludeBtn').addEventListener('click', () => {
     chrome.tabs.query({active: true, currentWindow: true}, async (tabs) => {
         const tab = tabs[0];
@@ -46,7 +48,7 @@ document.getElementById('excludeBtn').addEventListener('click', () => {
             const url = new URL(tab.url);
             const domain = url.hostname.replace(/^www\./, '');
             
-            // Also grab any cookies for this tab to whitelist their domains too
+            // Get all cookie domains associated with this URL to ensure total whitelist
             const cookies = await chrome.cookies.getAll({ url: tab.url });
             const domains = [...new Set([domain, ...cookies.map(c => c.domain.replace(/^\./, ''))])];
             
@@ -58,11 +60,25 @@ document.getElementById('excludeBtn').addEventListener('click', () => {
             btn.style.color = "#000";
             setTimeout(() => { window.close(); }, 800);
         } catch (e) {
-            // Ignore if unable to parse URL
+            // Ignore
         }
     });
 });
 
+// Manual Clean All
+document.getElementById('cleanBtn').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: "triggerManualCleanup" }, (response) => {
+        const btn = document.getElementById('cleanBtn');
+        btn.innerText = "Cleaning...";
+        btn.disabled = true;
+        setTimeout(() => {
+            btn.innerText = "Done!";
+            setTimeout(() => { window.close(); }, 500);
+        }, 800);
+    });
+});
+
+// Options Page
 document.getElementById('optionsBtn').addEventListener('click', () => {
     if (chrome.runtime.openOptionsPage) {
         chrome.runtime.openOptionsPage();

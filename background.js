@@ -1,8 +1,9 @@
 const STORAGE_KEY = 'HiddenElements';
 let cleanupTimer = null;
-let pendingCleanup = null;
-const tabOrigins = new Map();
 
+/**
+ * Normalizes a domain for the whitelist (e.g. "https://www.google.com" -> "*.google.com")
+ */
 function normalizeAndFormatDomain(inputDomain) {
     let domain = inputDomain.trim().toLowerCase();
     if (!domain) return null;
@@ -13,10 +14,12 @@ function normalizeAndFormatDomain(inputDomain) {
     return '*.' + domain;
 }
 
+/**
+ * Cleans up the whitelist by removing redundancies and sorting
+ */
 function cleanAndOptimizeList(list) {
     const normalized = list.map(normalizeAndFormatDomain).filter(Boolean);
     const unique = [...new Set(normalized)];
-
     unique.sort((a, b) => a.length - b.length);
 
     const optimized = [];
@@ -33,17 +36,28 @@ function cleanAndOptimizeList(list) {
     return optimized.sort();
 }
 
-function isWhitelistedDomain(domain, whitelist) {
-    domain = domain.replace(/^\./, '').toLowerCase();
-    return whitelist.some(site => {
-        site = site.trim().replace(/^\./, '').toLowerCase();
-        if (!site) return false;
-        if (site.startsWith('*.')) {
-            const baseDomain = site.slice(2);
-            return domain === baseDomain || domain.endsWith('.' + baseDomain);
+/**
+ * Creates a fast lookup object for the whitelist
+ */
+function createWhitelistMatchers(whitelist) {
+    const exact = new Set();
+    const wildcards = [];
+    whitelist.forEach(site => {
+        const normalized = site.trim().replace(/^\./, '').toLowerCase();
+        if (!normalized) return;
+        if (normalized.startsWith('*.')) {
+            wildcards.push(normalized.slice(2));
+        } else {
+            exact.add(normalized);
         }
-        return domain === site || domain.endsWith('.' + site);
     });
+    return { exact, wildcards };
+}
+
+function isWhitelisted(domain, matchers) {
+    const d = domain.replace(/^\./, '').toLowerCase();
+    if (matchers.exact.has(d)) return true;
+    return matchers.wildcards.some(base => d === base || d.endsWith('.' + base));
 }
 
 function getOriginFromUrl(url) {
@@ -59,6 +73,9 @@ function normalizeHost(hostname) {
     return hostname.replace(/^\./, '').toLowerCase();
 }
 
+/**
+ * Checks if a specific origin (from a tab) matches a cookie's domain
+ */
 function originMatchesCookie(origin, cookieDomain) {
     if (!origin || !cookieDomain) return false;
     try {
@@ -70,35 +87,23 @@ function originMatchesCookie(origin, cookieDomain) {
     }
 }
 
-function rememberTab(tab) {
-    if (!tab || !tab.id || !tab.url) {
-        return;
-    }
-
-    const origin = getOriginFromUrl(tab.url);
-    if (!origin) {
-        tabOrigins.delete(tab.id);
-        return;
-    }
-
-    tabOrigins.set(tab.id, origin);
-}
-
-function scheduleCleanup(removedTabId, removedOrigin, removedWindowId) {
-    pendingCleanup = { removedTabId, removedOrigin, removedWindowId };
-
+/**
+ * Debounced cleanup trigger
+ */
+function scheduleCleanup() {
     if (cleanupTimer) {
         clearTimeout(cleanupTimer);
     }
 
     cleanupTimer = setTimeout(() => {
         cleanupTimer = null;
-        const cleanupContext = pendingCleanup;
-        pendingCleanup = null;
-        cleanAllUnwhitelistedData(cleanupContext);
-    }, 250);
+        cleanAllUnwhitelistedData();
+    }, 500); // Slightly longer delay to ensure tab state is settled
 }
 
+/**
+ * Queries all open tabs to find active origins
+ */
 function getOpenOrigins(callback) {
     chrome.tabs.query({}, (tabs) => {
         const origins = new Set();
@@ -113,24 +118,31 @@ function getOpenOrigins(callback) {
     });
 }
 
-function cleanAllUnwhitelistedData(cleanupContext) {
+/**
+ * The core cleanup logic: removes all data for domains that are NOT whitelisted AND NOT open
+ */
+function cleanAllUnwhitelistedData() {
     chrome.storage.local.get([STORAGE_KEY], (result) => {
         const whitelist = result[STORAGE_KEY] || [];
+        const matchers = createWhitelistMatchers(whitelist);
 
         getOpenOrigins((openOrigins) => {
             chrome.cookies.getAll({}, (cookies) => {
                 if (!cookies || !cookies.length) return;
 
                 const originsToRemove = new Set();
-                const cookieRemovalPromises = cookies.map((cookie) => {
+                const cookieRemovalPromises = [];
+
+                cookies.forEach((cookie) => {
                     const rawDomain = cookie.domain || '';
                     const cookieDomain = rawDomain.replace(/^\./, '').toLowerCase();
 
-                    if (isWhitelistedDomain(cookieDomain, whitelist)) {
-                        return Promise.resolve();
+                    // 1. Check Whitelist
+                    if (isWhitelisted(cookieDomain, matchers)) {
+                        return;
                     }
 
-                    // Check if any open tab matches this cookie's domain
+                    // 2. Check Open Tabs
                     let isProtected = false;
                     for (const origin of openOrigins) {
                         if (originMatchesCookie(origin, cookieDomain)) {
@@ -140,27 +152,29 @@ function cleanAllUnwhitelistedData(cleanupContext) {
                     }
 
                     if (isProtected) {
-                        return Promise.resolve();
+                        return;
                     }
 
+                    // 3. Prepare for removal
                     const cleanDomain = rawDomain.startsWith('.') ? rawDomain.slice(1) : rawDomain;
                     const protocol = cookie.secure ? 'https://' : 'http://';
                     const cookieOrigin = `${protocol}${cleanDomain}`;
 
                     originsToRemove.add(cookieOrigin);
 
-                    return new Promise((resolve) => {
+                    cookieRemovalPromises.push(new Promise((resolve) => {
                         chrome.cookies.remove({
                             url: `${cookieOrigin}${cookie.path}`,
                             name: cookie.name,
                             storeId: cookie.storeId
                         }, () => resolve());
-                    });
+                    }));
                 });
 
                 Promise.all(cookieRemovalPromises).then(() => {
                     if (!originsToRemove.size) return;
 
+                    // Also clear other site data (localStorage, etc) for these origins
                     chrome.browsingData.remove({
                         origins: [...originsToRemove],
                         originTypes: { unprotectedWeb: true, protectedWeb: true }
@@ -180,36 +194,13 @@ function cleanAllUnwhitelistedData(cleanupContext) {
     });
 }
 
-chrome.tabs.onCreated.addListener(rememberTab);
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.url || changeInfo.status) {
-        rememberTab(tab);
-    }
-});
-chrome.tabs.onAttached.addListener((tabId) => {
-    chrome.tabs.get(tabId, rememberTab);
-});
-chrome.tabs.onDetached.addListener((tabId) => {
-    chrome.tabs.get(tabId, rememberTab);
-});
-chrome.tabs.onReplaced.addListener((addedTabId) => {
-    chrome.tabs.get(addedTabId, rememberTab);
-});
+// Lifecycle Events
+chrome.tabs.onRemoved.addListener(scheduleCleanup);
+chrome.windows.onRemoved.addListener(scheduleCleanup);
+chrome.runtime.onStartup.addListener(scheduleCleanup);
+chrome.runtime.onInstalled.addListener(scheduleCleanup);
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-    const removedOrigin = tabOrigins.get(tabId) || null;
-    tabOrigins.delete(tabId);
-    scheduleCleanup(tabId, removedOrigin, null);
-});
-
-chrome.windows.onRemoved.addListener((windowId) => {
-    scheduleCleanup(null, null, windowId);
-});
-
-chrome.runtime.onStartup.addListener(() => {
-    scheduleCleanup();
-});
-
+// Handle messages from popup/options
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'addMultipleToWhitelist') {
         chrome.storage.local.get([STORAGE_KEY], (res) => {
@@ -225,6 +216,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 scheduleCleanup();
             });
         });
+    } else if (request.action === 'triggerManualCleanup') {
+        cleanAllUnwhitelistedData();
+        sendResponse({ status: 'started' });
     }
     return true;
 });
