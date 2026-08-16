@@ -3,6 +3,8 @@ const saveBtn = document.getElementById('save');
 const exportBtn = document.getElementById('exportBtn');
 const importBtn = document.getElementById('importBtn');
 const fileInput = document.getElementById('fileInput');
+const tabCloseCheck = document.getElementById('deleteOnTabClose');
+const chromeCloseCheck = document.getElementById('deleteOnChromeClose');
 
 function normalizeDomain(domain) {
     domain = domain.trim().toLowerCase();
@@ -30,9 +32,22 @@ function normalizeDomain(domain) {
 }
 
 // Load current data
-chrome.storage.local.get(['HiddenElements'], (res) => {
+chrome.storage.local.get(['HiddenElements', 'deleteOnTabClose', 'deleteOnChromeClose'], (res) => {
     textarea.value = (res.HiddenElements || []).join('\n');
+    tabCloseCheck.checked = res.deleteOnTabClose || false;
+    chromeCloseCheck.checked = res.deleteOnChromeClose || false;
 });
+
+function saveSettings() {
+    chrome.storage.local.set({
+        deleteOnTabClose: tabCloseCheck.checked,
+        deleteOnChromeClose: chromeCloseCheck.checked,
+        isSetup: true
+    });
+}
+
+tabCloseCheck.addEventListener('change', saveSettings);
+chromeCloseCheck.addEventListener('change', saveSettings);
 
 // Save logic
 saveBtn.addEventListener('click', () => {
@@ -45,7 +60,12 @@ saveBtn.addEventListener('click', () => {
 
     textarea.value = list.join('\n');
 
-    chrome.storage.local.set({ HiddenElements: list }, () => {
+    chrome.storage.local.set({
+        HiddenElements: list,
+        deleteOnTabClose: tabCloseCheck.checked,
+        deleteOnChromeClose: chromeCloseCheck.checked,
+        isSetup: true
+    }, () => {
         saveBtn.innerText = "Saved!";
         setTimeout(() => {
             saveBtn.innerText = "Save List";

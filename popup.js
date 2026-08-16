@@ -22,9 +22,13 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const url = new URL(tab.url);
         const hostname = url.hostname;
 
-        chrome.storage.local.get([STORAGE_KEY], (res) => {
+        chrome.storage.local.get([STORAGE_KEY, 'isSetup'], (res) => {
             const whitelist = res[STORAGE_KEY] || [];
             const btn = document.getElementById('excludeBtn');
+
+            if (!res.isSetup) {
+                document.getElementById('setupNotice').style.display = 'block';
+            }
 
             if (isWhitelisted(hostname, whitelist)) {
                 btn.innerText = "Whitelisted";

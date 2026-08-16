@@ -1,5 +1,23 @@
 const STORAGE_KEY = 'HiddenElements';
+const VISITED_ORIGINS_KEY = 'VisitedOrigins';
 let cleanupTimer = null;
+
+/**
+ * Tracks an origin when a tab is updated
+ */
+function trackOrigin(url) {
+    if (!url || !url.startsWith('http')) return;
+    const origin = getOriginFromUrl(url);
+    if (!origin) return;
+
+    chrome.storage.local.get([VISITED_ORIGINS_KEY], (result) => {
+        const origins = new Set(result[VISITED_ORIGINS_KEY] || []);
+        if (!origins.has(origin)) {
+            origins.add(origin);
+            chrome.storage.local.set({ [VISITED_ORIGINS_KEY]: Array.from(origins) });
+        }
+    });
+}
 
 /**
  * Normalizes a domain for the whitelist (e.g. "https://www.google.com" -> "*.google.com")
@@ -90,15 +108,22 @@ function originMatchesCookie(origin, cookieDomain) {
 /**
  * Debounced cleanup trigger
  */
-function scheduleCleanup() {
-    if (cleanupTimer) {
-        clearTimeout(cleanupTimer);
-    }
+function scheduleCleanup(source) {
+    chrome.storage.local.get(['isSetup', 'deleteOnChromeClose', 'deleteOnTabClose'], (settings) => {
+        if (!settings.isSetup) return;
 
-    cleanupTimer = setTimeout(() => {
-        cleanupTimer = null;
-        cleanAllUnwhitelistedData();
-    }, 500); // Slightly longer delay to ensure tab state is settled
+        if (source === 'tab' && !settings.deleteOnTabClose) return;
+        if (source === 'browser' && !settings.deleteOnChromeClose) return;
+
+        if (cleanupTimer) {
+            clearTimeout(cleanupTimer);
+        }
+
+        cleanupTimer = setTimeout(() => {
+            cleanupTimer = null;
+            cleanAllUnwhitelistedData();
+        }, 500); // Slightly longer delay to ensure tab state is settled
+    });
 }
 
 /**
@@ -122,61 +147,79 @@ function getOpenOrigins(callback) {
  * The core cleanup logic: removes all data for domains that are NOT whitelisted AND NOT open
  */
 function cleanAllUnwhitelistedData() {
-    chrome.storage.local.get([STORAGE_KEY], (result) => {
+    chrome.storage.local.get([STORAGE_KEY, 'isSetup', VISITED_ORIGINS_KEY], (result) => {
+        if (!result.isSetup) return;
+
         const whitelist = result[STORAGE_KEY] || [];
         const matchers = createWhitelistMatchers(whitelist);
+        const visitedOrigins = result[VISITED_ORIGINS_KEY] || [];
 
         getOpenOrigins((openOrigins) => {
             chrome.cookies.getAll({}, (cookies) => {
-                if (!cookies || !cookies.length) return;
-
                 const originsToRemove = new Set();
                 const cookieRemovalPromises = [];
 
-                cookies.forEach((cookie) => {
-                    const rawDomain = cookie.domain || '';
-                    const cookieDomain = rawDomain.replace(/^\./, '').toLowerCase();
+                // 1. Process cookies to find origins and remove cookies
+                if (cookies && cookies.length) {
+                    cookies.forEach((cookie) => {
+                        const rawDomain = cookie.domain || '';
+                        const cookieDomain = rawDomain.replace(/^\./, '').toLowerCase();
 
-                    // 1. Check Whitelist
-                    if (isWhitelisted(cookieDomain, matchers)) {
-                        return;
-                    }
+                        // Check Whitelist
+                        if (isWhitelisted(cookieDomain, matchers)) return;
 
-                    // 2. Check Open Tabs
-                    let isProtected = false;
-                    for (const origin of openOrigins) {
-                        if (originMatchesCookie(origin, cookieDomain)) {
-                            isProtected = true;
-                            break;
+                        // Check Open Tabs
+                        let isProtected = false;
+                        for (const origin of openOrigins) {
+                            if (originMatchesCookie(origin, cookieDomain)) {
+                                isProtected = true;
+                                break;
+                            }
                         }
+                        if (isProtected) return;
+
+                        // Prepare for removal
+                        const cleanDomain = rawDomain.startsWith('.') ? rawDomain.slice(1) : rawDomain;
+                        const protocol = cookie.secure ? 'https://' : 'http://';
+                        const cookieOrigin = `${protocol}${cleanDomain}`;
+                        originsToRemove.add(cookieOrigin);
+
+                        cookieRemovalPromises.push(new Promise((resolve) => {
+                            chrome.cookies.remove({
+                                url: `${cookieOrigin}${cookie.path}`,
+                                name: cookie.name,
+                                storeId: cookie.storeId
+                            }, () => resolve());
+                        }));
+                    });
+                }
+
+                // 2. Process visited origins (covers sites with no cookies or session cookies that are gone)
+                visitedOrigins.forEach(origin => {
+                    try {
+                        const hostname = new URL(origin).hostname;
+                        const domain = hostname.replace(/^\./, '').toLowerCase();
+
+                        // Check Whitelist
+                        if (isWhitelisted(domain, matchers)) return;
+
+                        // Check Open Tabs
+                        if (openOrigins.has(origin)) return;
+
+                        originsToRemove.add(origin);
+                    } catch (e) {
+                        // Invalid origin in storage
                     }
-
-                    if (isProtected) {
-                        return;
-                    }
-
-                    // 3. Prepare for removal
-                    const cleanDomain = rawDomain.startsWith('.') ? rawDomain.slice(1) : rawDomain;
-                    const protocol = cookie.secure ? 'https://' : 'http://';
-                    const cookieOrigin = `${protocol}${cleanDomain}`;
-
-                    originsToRemove.add(cookieOrigin);
-
-                    cookieRemovalPromises.push(new Promise((resolve) => {
-                        chrome.cookies.remove({
-                            url: `${cookieOrigin}${cookie.path}`,
-                            name: cookie.name,
-                            storeId: cookie.storeId
-                        }, () => resolve());
-                    }));
                 });
 
                 Promise.all(cookieRemovalPromises).then(() => {
                     if (!originsToRemove.size) return;
 
-                    // Also clear other site data (localStorage, etc) for these origins
+                    const originsArray = Array.from(originsToRemove);
+
+                    // Clear site data (localStorage, etc) for these origins
                     chrome.browsingData.remove({
-                        origins: [...originsToRemove],
+                        origins: originsArray,
                         originTypes: { unprotectedWeb: true, protectedWeb: true }
                     }, {
                         cache: true,
@@ -187,6 +230,21 @@ function cleanAllUnwhitelistedData() {
                         localStorage: true,
                         serviceWorkers: true,
                         webSQL: true
+                    }, () => {
+                        // After successful removal, update visitedOrigins to remove the cleared ones
+                        chrome.storage.local.get([VISITED_ORIGINS_KEY], (res) => {
+                            const currentVisited = new Set(res[VISITED_ORIGINS_KEY] || []);
+                            let changed = false;
+                            originsArray.forEach(o => {
+                                if (currentVisited.has(o)) {
+                                    currentVisited.delete(o);
+                                    changed = true;
+                                }
+                            });
+                            if (changed) {
+                                chrome.storage.local.set({ [VISITED_ORIGINS_KEY]: Array.from(currentVisited) });
+                            }
+                        });
                     });
                 });
             });
@@ -195,15 +253,32 @@ function cleanAllUnwhitelistedData() {
 }
 
 // Lifecycle Events
-chrome.tabs.onRemoved.addListener(scheduleCleanup);
-chrome.windows.onRemoved.addListener(scheduleCleanup);
-chrome.runtime.onStartup.addListener(scheduleCleanup);
-chrome.runtime.onInstalled.addListener(scheduleCleanup);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === 'complete' && tab.url) {
+        trackOrigin(tab.url);
+    }
+});
+chrome.tabs.onRemoved.addListener(() => scheduleCleanup('tab'));
+chrome.windows.onRemoved.addListener(() => scheduleCleanup('browser'));
+chrome.runtime.onStartup.addListener(() => scheduleCleanup('browser'));
+chrome.runtime.onInstalled.addListener((details) => {
+    if (details.reason === 'install') {
+        chrome.storage.local.set({
+            isSetup: false,
+            deleteOnChromeClose: false,
+            deleteOnTabClose: false,
+            [STORAGE_KEY]: [],
+            [VISITED_ORIGINS_KEY]: []
+        });
+    } else {
+        scheduleCleanup('browser');
+    }
+});
 
 // Handle messages from popup/options
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'addMultipleToWhitelist') {
-        chrome.storage.local.get([STORAGE_KEY], (res) => {
+        chrome.storage.local.get([STORAGE_KEY, 'isSetup'], (res) => {
             let list = res[STORAGE_KEY] || [];
             request.domains.forEach(d => {
                 const formatted = normalizeAndFormatDomain(d);
@@ -212,8 +287,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }
             });
             const optimizedList = cleanAndOptimizeList(list);
-            chrome.storage.local.set({ [STORAGE_KEY]: optimizedList }, () => {
-                scheduleCleanup();
+
+            const updates = { [STORAGE_KEY]: optimizedList };
+            if (!res.isSetup) updates.isSetup = true;
+
+            chrome.storage.local.set(updates, () => {
+                // If we just setup, we might want to trigger a cleanup if settings allow
+                // But usually setup is done in options page where they set the settings too
+                scheduleCleanup('browser');
             });
         });
     } else if (request.action === 'triggerManualCleanup') {
