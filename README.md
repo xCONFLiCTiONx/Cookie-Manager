@@ -1,3 +1,5 @@
+<img src="icons/icon128.png" alt="Weather Watcher Logo" width="64" align="left" style="margin-right: 20px; border-radius: 10px;">
+
 # Cookie Manager
 
 A productivity and privacy extension that automatically manages your browser session by wiping site-specific storage and cookies the moment you close a tab.
