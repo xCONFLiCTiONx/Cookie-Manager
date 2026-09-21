@@ -2,6 +2,35 @@ const STORAGE_KEY = 'HiddenElements';
 const VISITED_ORIGINS_KEY = 'VisitedOrigins';
 let cleanupTimer = null;
 
+// background.js
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "updateIcon") {
+        updateExtensionIcon(request.isDarkMode);
+    }
+});
+
+async function updateExtensionIcon(isDarkMode) {
+    const iconColor = isDarkMode ? "#FFFFFF" : "#000000";
+
+    const size = 48;
+    const canvas = new OffscreenCanvas(size, size);
+    const ctx = canvas.getContext("2d");
+
+    ctx.clearRect(0, 0, size, size);
+    ctx.fillStyle = iconColor;
+
+    ctx.save();
+    ctx.scale(2, 2);
+    const p = new Path2D(
+        "M12 2c.714 0 1.419.075 2.106.222a.75.75 0 0 1 .374 1.263 2.501 2.501 0 0 0 1.206 4.201.75.75 0 0 1 .577.811 2.5 2.5 0 0 0 4.36 1.908.75.75 0 0 1 1.307.409c.047.39.07.787.07 1.186 0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2Zm3 14a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm-7-1a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm4-4a1 1 0 1 0 0 2 1 1 0 0 0 0-2ZM7 8a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z"
+    );
+    ctx.fill(p);
+    ctx.restore();
+
+    const imageData = ctx.getImageData(0, 0, size, size);
+    chrome.action.setIcon({ imageData: imageData });
+}
+
 /**
  * Tracks an origin when a tab is updated
  */

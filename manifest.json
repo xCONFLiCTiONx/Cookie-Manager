@@ -2,11 +2,30 @@
   "manifest_version": 3,
   "name": "Cookie Manager",
   "version": "1.0",
-  "permissions": ["cookies", "storage", "tabs", "browsingData"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": [
+    "cookies",
+    "storage",
+    "tabs",
+    "browsingData"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "renderIcon.js",
+        "content.js"
+      ],
+      "run_at": "document_end"
+    }
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "options_page": "options.html",
-  "action": { 
-    "default_popup": "popup.html" 
+  "action": {
+    "default_popup": "popup.html"
   },
   "icons": {
     "16": "icons/icon16.png",
@@ -14,7 +33,8 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "background": { 
-    "service_worker": "background.js" 
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
   }
 }
