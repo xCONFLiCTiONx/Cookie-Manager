@@ -316,6 +316,15 @@ let gpcSyncPromise = Promise.resolve();
  */
 function syncGpcState(enabled) {
     gpcSyncPromise = gpcSyncPromise.then(async () => {
+        // Explicitly disable Chrome's native DNT setting
+        try {
+            if (chrome.privacy && chrome.privacy.network && chrome.privacy.network.doNotTrackEnabled) {
+                chrome.privacy.network.doNotTrackEnabled.set({ value: false });
+            }
+        } catch (e) {
+            console.error('Error disabling browser DNT setting:', e);
+        }
+
         try {
             if (enabled) {
                 await chrome.declarativeNetRequest.updateEnabledRulesets({
