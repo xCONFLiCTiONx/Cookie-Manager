@@ -5,6 +5,7 @@ const importBtn = document.getElementById('importBtn');
 const fileInput = document.getElementById('fileInput');
 const tabCloseCheck = document.getElementById('deleteOnTabClose');
 const chromeCloseCheck = document.getElementById('deleteOnChromeClose');
+const gpcCheck = document.getElementById('enableGPC');
 
 function normalizeDomain(domain) {
     domain = domain.trim().toLowerCase();
@@ -32,22 +33,25 @@ function normalizeDomain(domain) {
 }
 
 // Load current data
-chrome.storage.local.get(['HiddenElements', 'deleteOnTabClose', 'deleteOnChromeClose'], (res) => {
+chrome.storage.local.get(['HiddenElements', 'deleteOnTabClose', 'deleteOnChromeClose', 'enableGPC'], (res) => {
     textarea.value = (res.HiddenElements || []).join('\n');
     tabCloseCheck.checked = res.deleteOnTabClose || false;
     chromeCloseCheck.checked = res.deleteOnChromeClose || false;
+    gpcCheck.checked = res.enableGPC !== false;
 });
 
 function saveSettings() {
     chrome.storage.local.set({
         deleteOnTabClose: tabCloseCheck.checked,
         deleteOnChromeClose: chromeCloseCheck.checked,
+        enableGPC: gpcCheck.checked,
         isSetup: true
     });
 }
 
 tabCloseCheck.addEventListener('change', saveSettings);
 chromeCloseCheck.addEventListener('change', saveSettings);
+gpcCheck.addEventListener('change', saveSettings);
 
 // Save logic
 saveBtn.addEventListener('click', () => {
@@ -64,6 +68,7 @@ saveBtn.addEventListener('click', () => {
         HiddenElements: list,
         deleteOnTabClose: tabCloseCheck.checked,
         deleteOnChromeClose: chromeCloseCheck.checked,
+        enableGPC: gpcCheck.checked,
         isSetup: true
     }, () => {
         saveBtn.innerText = "Saved!";

@@ -6,8 +6,19 @@
     "cookies",
     "storage",
     "tabs",
-    "browsingData"
+    "browsingData",
+    "declarativeNetRequest",
+    "scripting"
   ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "gpc_rules",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
   "content_scripts": [
     {
       "matches": [

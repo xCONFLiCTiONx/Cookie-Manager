@@ -289,18 +289,90 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 chrome.tabs.onRemoved.addListener(() => scheduleCleanup('tab'));
 chrome.windows.onRemoved.addListener(() => scheduleCleanup('browser'));
-chrome.runtime.onStartup.addListener(() => scheduleCleanup('browser'));
+chrome.runtime.onStartup.addListener(() => {
+    scheduleCleanup('browser');
+    initGpc();
+});
 chrome.runtime.onInstalled.addListener((details) => {
     if (details.reason === 'install') {
         chrome.storage.local.set({
             isSetup: false,
             deleteOnChromeClose: false,
             deleteOnTabClose: false,
+            enableGPC: true,
             [STORAGE_KEY]: [],
             [VISITED_ORIGINS_KEY]: []
         });
     } else {
         scheduleCleanup('browser');
+    }
+    initGpc();
+});
+
+let gpcSyncPromise = Promise.resolve();
+
+/**
+ * Synchronizes GPC declarativeNetRequest rules and main-world content script registration
+ */
+function syncGpcState(enabled) {
+    gpcSyncPromise = gpcSyncPromise.then(async () => {
+        try {
+            if (enabled) {
+                await chrome.declarativeNetRequest.updateEnabledRulesets({
+                    enableRulesetIds: ['gpc_rules']
+                });
+            } else {
+                await chrome.declarativeNetRequest.updateEnabledRulesets({
+                    disableRulesetIds: ['gpc_rules']
+                });
+            }
+        } catch (e) {
+            console.error('Error updating declarativeNetRequest rulesets:', e);
+        }
+
+        try {
+            const scriptId = 'gpc-main-world';
+            try {
+                await chrome.scripting.unregisterContentScripts({ ids: [scriptId] });
+            } catch (e) {
+                // Ignore if script was not previously registered
+            }
+
+            if (enabled) {
+                await chrome.scripting.registerContentScripts([{
+                    id: scriptId,
+                    matches: ['<all_urls>'],
+                    js: ['gpc.js'],
+                    runAt: 'document_start',
+                    world: 'MAIN',
+                    allFrames: true
+                }]);
+            }
+        } catch (e) {
+            console.error('Error registering GPC content script:', e);
+        }
+    }).catch((err) => {
+        console.error('GPC sync error:', err);
+    });
+    return gpcSyncPromise;
+}
+
+function initGpc() {
+    chrome.storage.local.get(['enableGPC'], (res) => {
+        const enabled = res.enableGPC !== false;
+        if (res.enableGPC === undefined) {
+            chrome.storage.local.set({ enableGPC: true });
+        }
+        syncGpcState(enabled);
+    });
+}
+
+// Initialize GPC on service worker start
+initGpc();
+
+chrome.storage.onChanged.addListener((changes, namespace) => {
+    if (namespace === 'local' && changes.enableGPC) {
+        syncGpcState(changes.enableGPC.newValue !== false);
     }
 });
 
