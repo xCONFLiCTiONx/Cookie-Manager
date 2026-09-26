@@ -11,7 +11,7 @@ A productivity and privacy extension that automatically manages your browser ses
 ## ✨ Key Features
 
 - **Automated Cleanup**: Triggers data removal immediately upon closing a tab.
-- **Global Privacy Control (GPC & DNT)**: Enables `Sec-GPC: 1` and `DNT: 1` HTTP request headers and sets `navigator.globalPrivacyControl = true` across all websites to automatically request opt-out of data tracking and selling.
+- **Global Privacy Control (GPC)**: Enables `Sec-GPC: 1` HTTP request header and sets `navigator.globalPrivacyControl = true` across all websites to automatically request opt-out of data tracking and selling.
 - **Smart Whitelisting**: Use a high-performance `Set`-based lookup to protect essential login cookies for your favorite sites.
 - **Manual "Clean All"**: One-click button in the popup to wipe all unwhitelisted data across all open sessions.
 - **Comprehensive Purge**: Wipes cookies, local storage, session storage, and other site-specific data.

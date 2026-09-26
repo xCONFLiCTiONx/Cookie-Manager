@@ -9,11 +9,6 @@
           "header": "Sec-GPC",
           "operation": "set",
           "value": "1"
-        },
-        {
-          "header": "DNT",
-          "operation": "set",
-          "value": "1"
         }
       ]
     },
