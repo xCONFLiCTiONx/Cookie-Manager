@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Cookie Manager",
   "version": "1.0",
+  "description": "Automatically purge site cookies, local storage, and track data on tab close, with GPC support and custom whitelisting.",
   "permissions": [
     "cookies",
     "storage",
