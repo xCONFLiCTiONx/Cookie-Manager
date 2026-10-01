@@ -31,9 +31,6 @@ async function updateExtensionIcon(isDarkMode) {
     chrome.action.setIcon({ imageData: imageData });
 }
 
-/**
- * Tracks an origin when a tab is updated
- */
 function trackOrigin(url) {
     if (!url || !url.startsWith('http')) return;
     const origin = getOriginFromUrl(url);
@@ -48,9 +45,6 @@ function trackOrigin(url) {
     });
 }
 
-/**
- * Normalizes a domain for the whitelist (e.g. "https://www.google.com" -> "*.google.com")
- */
 function normalizeAndFormatDomain(inputDomain) {
     let domain = inputDomain.trim().toLowerCase();
     if (!domain) return null;
@@ -61,9 +55,6 @@ function normalizeAndFormatDomain(inputDomain) {
     return '*.' + domain;
 }
 
-/**
- * Cleans up the whitelist by removing redundancies and sorting
- */
 function cleanAndOptimizeList(list) {
     const normalized = list.map(normalizeAndFormatDomain).filter(Boolean);
     const unique = [...new Set(normalized)];
@@ -83,9 +74,6 @@ function cleanAndOptimizeList(list) {
     return optimized.sort();
 }
 
-/**
- * Creates a fast lookup object for the whitelist
- */
 function createWhitelistMatchers(whitelist) {
     const exact = new Set();
     const wildcards = [];
@@ -120,9 +108,6 @@ function normalizeHost(hostname) {
     return hostname.replace(/^\./, '').toLowerCase();
 }
 
-/**
- * Checks if a specific origin (from a tab) matches a cookie's domain
- */
 function originMatchesCookie(origin, cookieDomain) {
     if (!origin || !cookieDomain) return false;
     try {
@@ -134,9 +119,6 @@ function originMatchesCookie(origin, cookieDomain) {
     }
 }
 
-/**
- * Debounced cleanup trigger
- */
 function scheduleCleanup(source) {
     chrome.storage.local.get(['isSetup', 'deleteOnChromeClose', 'deleteOnTabClose'], (settings) => {
         if (!settings.isSetup) return;
@@ -151,13 +133,10 @@ function scheduleCleanup(source) {
         cleanupTimer = setTimeout(() => {
             cleanupTimer = null;
             cleanAllUnwhitelistedData();
-        }, 500); // Slightly longer delay to ensure tab state is settled
+        }, 500);
     });
 }
 
-/**
- * Queries all open tabs to find active origins
- */
 function getOpenOrigins(callback) {
     chrome.tabs.query({}, (tabs) => {
         const origins = new Set();
@@ -172,9 +151,6 @@ function getOpenOrigins(callback) {
     });
 }
 
-/**
- * The core cleanup logic: removes all data for domains that are NOT whitelisted AND NOT open
- */
 function cleanAllUnwhitelistedData() {
     chrome.storage.local.get([STORAGE_KEY, 'isSetup', VISITED_ORIGINS_KEY], (result) => {
         if (!result.isSetup) return;
@@ -188,16 +164,13 @@ function cleanAllUnwhitelistedData() {
                 const originsToRemove = new Set();
                 const cookieRemovalPromises = [];
 
-                // 1. Process cookies to find origins and remove cookies
                 if (cookies && cookies.length) {
                     cookies.forEach((cookie) => {
                         const rawDomain = cookie.domain || '';
                         const cookieDomain = rawDomain.replace(/^\./, '').toLowerCase();
 
-                        // Check Whitelist
                         if (isWhitelisted(cookieDomain, matchers)) return;
 
-                        // Check Open Tabs
                         let isProtected = false;
                         for (const origin of openOrigins) {
                             if (originMatchesCookie(origin, cookieDomain)) {
@@ -207,7 +180,6 @@ function cleanAllUnwhitelistedData() {
                         }
                         if (isProtected) return;
 
-                        // Prepare for removal
                         const cleanDomain = rawDomain.startsWith('.') ? rawDomain.slice(1) : rawDomain;
                         const protocol = cookie.secure ? 'https://' : 'http://';
                         const cookieOrigin = `${protocol}${cleanDomain}`;
@@ -223,22 +195,16 @@ function cleanAllUnwhitelistedData() {
                     });
                 }
 
-                // 2. Process visited origins (covers sites with no cookies or session cookies that are gone)
                 visitedOrigins.forEach(origin => {
                     try {
                         const hostname = new URL(origin).hostname;
                         const domain = hostname.replace(/^\./, '').toLowerCase();
 
-                        // Check Whitelist
                         if (isWhitelisted(domain, matchers)) return;
-
-                        // Check Open Tabs
                         if (openOrigins.has(origin)) return;
 
                         originsToRemove.add(origin);
-                    } catch (e) {
-                        // Invalid origin in storage
-                    }
+                    } catch (e) {}
                 });
 
                 Promise.all(cookieRemovalPromises).then(() => {
@@ -246,7 +212,6 @@ function cleanAllUnwhitelistedData() {
 
                     const originsArray = Array.from(originsToRemove);
 
-                    // Clear site data (localStorage, etc) for these origins
                     chrome.browsingData.remove({
                         origins: originsArray,
                         originTypes: { unprotectedWeb: true, protectedWeb: true }
@@ -260,7 +225,6 @@ function cleanAllUnwhitelistedData() {
                         serviceWorkers: true,
                         webSQL: true
                     }, () => {
-                        // After successful removal, update visitedOrigins to remove the cleared ones
                         chrome.storage.local.get([VISITED_ORIGINS_KEY], (res) => {
                             const currentVisited = new Set(res[VISITED_ORIGINS_KEY] || []);
                             let changed = false;
@@ -281,7 +245,6 @@ function cleanAllUnwhitelistedData() {
     });
 }
 
-// Lifecycle Events
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.status === 'complete' && tab.url) {
         trackOrigin(tab.url);
@@ -291,7 +254,6 @@ chrome.tabs.onRemoved.addListener(() => scheduleCleanup('tab'));
 chrome.windows.onRemoved.addListener(() => scheduleCleanup('browser'));
 chrome.runtime.onStartup.addListener(() => {
     scheduleCleanup('browser');
-    initGpc();
 });
 chrome.runtime.onInstalled.addListener((details) => {
     if (details.reason === 'install') {
@@ -299,93 +261,14 @@ chrome.runtime.onInstalled.addListener((details) => {
             isSetup: false,
             deleteOnChromeClose: false,
             deleteOnTabClose: false,
-            enableGPC: true,
             [STORAGE_KEY]: [],
             [VISITED_ORIGINS_KEY]: []
         });
     } else {
         scheduleCleanup('browser');
     }
-    initGpc();
 });
 
-let gpcSyncPromise = Promise.resolve();
-
-/**
- * Synchronizes GPC declarativeNetRequest rules and main-world content script registration
- */
-function syncGpcState(enabled) {
-    gpcSyncPromise = gpcSyncPromise.then(async () => {
-        // Explicitly disable Chrome's native DNT setting
-        try {
-            if (chrome.privacy && chrome.privacy.network && chrome.privacy.network.doNotTrackEnabled) {
-                chrome.privacy.network.doNotTrackEnabled.set({ value: false });
-            }
-        } catch (e) {
-            console.error('Error disabling browser DNT setting:', e);
-        }
-
-        try {
-            if (enabled) {
-                await chrome.declarativeNetRequest.updateEnabledRulesets({
-                    enableRulesetIds: ['gpc_rules']
-                });
-            } else {
-                await chrome.declarativeNetRequest.updateEnabledRulesets({
-                    disableRulesetIds: ['gpc_rules']
-                });
-            }
-        } catch (e) {
-            console.error('Error updating declarativeNetRequest rulesets:', e);
-        }
-
-        try {
-            const scriptId = 'gpc-main-world';
-            try {
-                await chrome.scripting.unregisterContentScripts({ ids: [scriptId] });
-            } catch (e) {
-                // Ignore if script was not previously registered
-            }
-
-            if (enabled) {
-                await chrome.scripting.registerContentScripts([{
-                    id: scriptId,
-                    matches: ['<all_urls>'],
-                    js: ['gpc.js'],
-                    runAt: 'document_start',
-                    world: 'MAIN',
-                    allFrames: true
-                }]);
-            }
-        } catch (e) {
-            console.error('Error registering GPC content script:', e);
-        }
-    }).catch((err) => {
-        console.error('GPC sync error:', err);
-    });
-    return gpcSyncPromise;
-}
-
-function initGpc() {
-    chrome.storage.local.get(['enableGPC'], (res) => {
-        const enabled = res.enableGPC !== false;
-        if (res.enableGPC === undefined) {
-            chrome.storage.local.set({ enableGPC: true });
-        }
-        syncGpcState(enabled);
-    });
-}
-
-// Initialize GPC on service worker start
-initGpc();
-
-chrome.storage.onChanged.addListener((changes, namespace) => {
-    if (namespace === 'local' && changes.enableGPC) {
-        syncGpcState(changes.enableGPC.newValue !== false);
-    }
-});
-
-// Handle messages from popup/options
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'addMultipleToWhitelist') {
         chrome.storage.local.get([STORAGE_KEY, 'isSetup'], (res) => {
@@ -402,8 +285,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             if (!res.isSetup) updates.isSetup = true;
 
             chrome.storage.local.set(updates, () => {
-                // If we just setup, we might want to trigger a cleanup if settings allow
-                // But usually setup is done in options page where they set the settings too
                 scheduleCleanup('browser');
             });
         });
